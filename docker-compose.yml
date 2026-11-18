@@ -1,0 +1,86 @@
+# 双代理熔断器演练：
+#   redis    共享熔断状态（AOF 持久化，重启不提前放行）
+#   backend  本地模拟诊断后端（normal / timeout 两种模式）
+#   proxy-a、proxy-b 两份代理实例，合计统计连续超时
+#   web      运维操作网页（http://localhost:8080）
+services:
+  redis:
+    image: redis:7.0
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    volumes:
+      - ./redis/redis.conf:/etc/redis/redis.conf:ro
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile
+      args:
+        APP_DIR: app
+    environment:
+      BACKEND_HANG: "2.0"
+    expose:
+      - "8000"
+
+  proxy-a:
+    build:
+      context: ./proxy
+      dockerfile: ../Dockerfile
+      args:
+        APP_DIR: app
+    environment:
+      PROXY_ID: "proxy-a"
+      REDIS_URL: "redis://redis:6379/0"
+      BACKEND_URL: "http://backend:8000"
+      BACKEND_TIMEOUT: "2.5"
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    ports:
+      - "8081:8000"
+
+  proxy-b:
+    build:
+      context: ./proxy
+      dockerfile: ../Dockerfile
+      args:
+        APP_DIR: app
+    environment:
+      PROXY_ID: "proxy-b"
+      REDIS_URL: "redis://redis:6379/0"
+      BACKEND_URL: "http://backend:8000"
+      BACKEND_TIMEOUT: "2.5"
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    ports:
+      - "8082:8000"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: ../Dockerfile
+      args:
+        APP_DIR: app
+    environment:
+      PROXY_A_URL: "http://proxy-a:8000"
+      PROXY_B_URL: "http://proxy-b:8000"
+      BACKEND_URL: "http://backend:8000"
+    depends_on:
+      - proxy-a
+      - proxy-b
+      - backend
+    ports:
+      - "8080:8000"
+
+volumes:
+  redis-data:
